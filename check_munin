@@ -1,0 +1,81 @@
+#!/usr/bin/env python
+# -*- coding: utf8 -*-
+
+# 2014-02-02 mdyzio creation
+# 2017-08-20 mdyzio parsing arguments by argparse; adding argument with IP
+
+STATE_OK = 0
+STATE_WARNING = 1
+STATE_CRITICAL = 2
+STATE_UNKNOWN = 3
+
+import argparse
+import socket
+import sys
+
+parser = argparse.ArgumentParser(description='Checks if munin-node works correctly (it is possible to connect and fetch data for all advertised plugins).')
+parser.add_argument('hostname', type=str, help='hostname of checked host')
+parser.add_argument('-v', dest='verbose', action='store_true')
+parser.add_argument('-H', type=str, help='host IP address', dest='address')
+parser.add_argument('-p', type=int, help='port (default: 4949)', dest='port')
+args = parser.parse_args()
+
+# debug settings and handling
+DEBUG = int(args.verbose)
+
+def debug(msg):
+	if DEBUG:
+		if msg[-1] != "\n":
+			msg += "\n"
+		sys.stderr.write(msg)
+
+host = args.hostname
+if args.address:
+	host = args.address
+port = 4949
+if args.port:
+	port = args.port
+
+debug('Connecting to (%s, %d)' % (host, port))
+
+# "main"
+
+# 0) open port etc.
+try:
+	s = socket.create_connection((host, port))
+	debug('Connected to ' + host)
+except:
+	print 'CRITICAL: Cannot connect to ' + host + ':' + str(port)
+	exit(STATE_CRITICAL)
+
+# 1) does host repond "# munin node at noc.staszic.waw.pl"?
+resp = s.recv(104)
+if not resp == '# munin node at ' + args.hostname + "\n":
+	print 'CRITICAL: Host response doesn\'t match expected (got: ' + resp + ')'
+	exit(STATE_CRITICAL)
+debug('Got proper response')
+
+# 2) does any plugin returns comment?
+# TODO check if enabled plugins count is nonzero
+s.send("list\n")
+plugins = s.recv(1024).split(' ')
+debug('Available plugins: ' + str(plugins))
+for i in plugins:
+	s.send("fetch " + i + "\n")
+	debug('fetch ' + i)
+	resp=''
+	while resp[-3:] != "\n.\n":
+		resp += s.recv(1024)
+		if resp[0] == "\n":
+			resp = resp[1:]
+	debug(resp)
+	if resp[0] == '#':
+		if resp[-3:] == "\n.\n":
+			resp = resp[:-3]
+		print 'WARNING: plugin ' + i + ' returned "' + resp + '"'
+		exit(STATE_WARNING)
+
+s.close()
+
+print 'OK: listed and fetched all answers successfully'
+exit(STATE_OK)
