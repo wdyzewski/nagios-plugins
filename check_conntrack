@@ -1,0 +1,59 @@
+#!/bin/bash
+
+# Author: some Hispanic man + mdyzio (99% refactor)
+
+. /usr/lib/nagios/plugins/utils.sh
+
+if [ $# != 2 ]; then
+	echo "Syntax: check_conntrack <warn percent> <crit percent>"
+	echo 
+	echo "Example: check_conntrack 75 90"
+	echo "Checks if conntrack_count <= 75% conntrack_max"
+	echo "or if conntrack_count <= 90% conntrack_max"
+	exit -1
+fi
+
+
+############## 
+COUNT_FILE=`find /proc/sys -name *conntrack_count | head -n 1`
+MAX_FILE=`find /proc/sys -name *conntrack_max | head -n 1`
+if [ -z $MAX_FILE ] || [ -z $COUNT_FILE ]; then
+	echo "UNKNOWN - Cannot find files"
+	exit $STATE_UNKNOWN
+fi
+
+
+############## 
+COUNT=`cat $COUNT_FILE | head -n 1`
+MAX=`cat $MAX_FILE | head -n 1 `
+WARN=$(( $MAX * $1 / 100 ))
+CRIT=$(( $MAX * $2 / 100 ))
+
+
+############## 
+print_status()
+{
+	# $1 - status text ("OK|WARNING|CRITICAL")
+	echo "$1 - $COUNT/$MAX ($(( 100 * $COUNT / $MAX ))%) |con=$COUNT"
+}
+
+if [ $COUNT -le $WARN ]; then
+	print_status "OK"
+	exit $STATE_OK
+
+fi
+
+if [ $COUNT -le $CRIT  ]; then
+	print_status "WARNING"
+	exit $STATE_WARNING
+fi
+
+if [ $COUNT -gt $CRIT ]; then
+	print_status "CRITICAL"
+	echo "Did kernel load values from /etc/sysctl*?"
+	exit $STATE_CRITICAL
+fi
+
+print_status "UNKNOWN (Logic error)"
+exit $STATE_UNKNOWN
+
