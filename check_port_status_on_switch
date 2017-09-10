@@ -1,0 +1,109 @@
+#!/usr/bin/env python
+
+# 2014-02-18 mdyzio creation
+# 2017-09-10 mdyzio urgh, 3 years ago I was a diffrent Python coder :/
+#                   TODO:
+#                   * change indentation to 3-4 spaces
+#                   * make code more readable
+
+import re
+import sys
+import netsnmp
+import argparse
+
+def human_readable(num):
+ suff = { 10**3: 'k', 10**6: 'm', 10**9: 'g', 10**12: 't' }
+ ret = str(num)
+ for mul in suff:
+  if mul <= num:
+   ret = str(num/mul) + suff[mul]
+ return ret
+
+def exit_ok(msg):
+ print('OK: ' + msg)
+ sys.exit(0)
+
+def exit_warn(msg):
+ print('WARNING: ' + msg)
+ sys.exit(1)
+
+def exit_crit(msg):
+ print('CRITICAL: ' + msg)
+ sys.exit(2)
+
+def exit_unknown(msg):
+ print('UNKNOWN: ' + msg)
+ sys.exit(3)
+
+def is_int(x):
+ try:
+  int(x)
+  return True
+ except ValueError:
+  return False
+
+parser = argparse.ArgumentParser(description='Checks status of port on switch - its link state (up/down), STP state and negotiated link speed. Very handy way to use this script is to define nagios service with desciption which will be used as --mixed (put in nagios commands: `check_port_status_on_switch.py $HOSTADDRESS$ $COMMUNITY$ -m "$SERVICEDESC$"`).')
+parser.add_argument('host', help='host address or name')
+parser.add_argument('community', help='SNMP community')
+parser.add_argument('-p', '--port', help='port number or name')
+parser.add_argument('-s', '--speed', help='speed of link')
+parser.add_argument('-m', '--mixed', help='speed and port (eg. Gigabit port5 or 100m name-of-port)')
+args = parser.parse_args()
+
+host = args.host
+community = args.community
+if args.port != None and args.speed != None:
+ if args.mixed != None:
+  exit_crit('Need to specify only --port and --speed or --mixed')
+ port = args.port
+ speed = int(re.findall('[0-9]+', args.speed)[0]) * {'k': 1000, 'm': 10**6, 'g': 10**9, 't': 10**12}[re.findall('[kKmMgGtT]', args.speed)[0].lower()]
+elif args.mixed != None:
+ # speed_human_readable = '[0-9]*[kmgtKMGT]'
+ speed_human_readable = re.findall('([0-9]*[kKmMgGtT])([a-z]*bit)?', args.mixed)[0][0]
+ speed_number = re.findall('[0-9]+', speed_human_readable)
+ if speed_number == []:
+  speed_number = 1
+ else:
+  speed_number = int(speed_number[0])
+ speed_mul = {'k': 1000, 'm': 10**6, 'g': 10**9, 't': 10**12}[re.findall('[kKmMgGtT]', speed_human_readable)[0].lower()]
+ speed = speed_number * speed_mul
+
+ try:
+  port = re.findall(' port([0-9]+)', args.mixed)[0]
+ except:
+  port = re.findall(' (.*)', args.mixed)[0]
+else:
+ exit_crit('Need to specify --port and --speed or --mixed')
+
+if is_int(port):
+ port_nr = port
+else:
+ try:
+  ports = netsnmp.snmpwalk(netsnmp.Varbind('ifAlias'), Version=2, DestHost=host, Community=community)
+  port_nr = ports.index(port)+1
+ except:
+  exit_crit('No port named '+port)
+
+LINK_TO_STRING = { 1: 'up', 2: 'down', 3: 'testing', 4: 'unknown', 5: 'dormant', 6: 'notPresent', 7: 'lowerLayerDown' }
+# STP_TO_STRING[7] added by author of script
+STP_TO_STRING = { 1: 'disabled', 2: 'blocking', 3: 'listening', 4: 'learning', 5: 'forwarding', 6: 'broken', 7: 'not available' }
+
+
+link_status = int(netsnmp.snmpget(netsnmp.Varbind('ifOperStatus', port_nr), Version=2, DestHost=host, Community=community)[0])
+stp_status = netsnmp.snmpget(netsnmp.Varbind('1.3.6.1.2.1.17.2.15.1.3', port_nr), Version=2, DestHost=host, Community=community)[0]
+if stp_status == None:
+ stp_status = 7
+else:
+ stp_status = int(stp_status)
+speed_status = int(netsnmp.snmpget(netsnmp.Varbind('ifSpeed', port_nr), Version=2, DestHost=host, Community=community)[0])
+
+if LINK_TO_STRING[link_status] == 'up':
+ if STP_TO_STRING[stp_status] != 'blocking':
+  if speed_status == speed:
+   exit_ok('Link: '+LINK_TO_STRING[link_status]+', STP: '+STP_TO_STRING[stp_status]+', Speed: '+human_readable(speed_status))
+  else:
+   exit_warn('Link: '+LINK_TO_STRING[link_status]+', STP: '+STP_TO_STRING[stp_status]+', Speed: '+human_readable(speed_status)+' (!= '+human_readable(speed)+')')
+ else:
+  exit_crit('Link: '+LINK_TO_STRING[link_status]+', STP: '+STP_TO_STRING[stp_status].upper()+', Speed: '+human_readable(speed_status))
+else:
+ exit_crit('Link: '+LINK_TO_STRING[link_status]+' (!= up), STP: '+STP_TO_STRING[stp_status]+', Speed: '+human_readable(speed_status))
