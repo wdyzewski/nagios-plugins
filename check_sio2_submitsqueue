@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# Checks if SIO2's <https://github.com/sio2project/oioioi> submitsqueue has length below some values.
+# Long time with limits exceeded can mean:
+# * there's too many submissions for workers
+#   -> are all workers really working?
+#   -> need to prepare new workers?
+# * part of SIO2 responsible for connections with workers have problems.
+
+# script should be run as sio2 user
+
+# hardcoded thresholds
+WARN=3
+CRIT=10
+
+. /usr/lib/nagios/plugins/utils.sh
+
+# cd to SIO2 deployment dir
+cd /vol/sio2/deployment
+# activate SIO2 python virtualenv
+. ../activate
+
+out=$(./manage.py shell --quiet-load 2>/dev/null << EOF
+queue = sorted(QueuedSubmit.objects.filter(state__in=['QUEUED', 'PROGRESS', 'WAITING']), key=lambda submit: submit.creation_date)
+print(len(queue))
+for submit in queue:
+	print(submit.creation_date)
+
+EOF
+)
+out=$(echo "$out" | sed 's/>>> //g; s/... //g')
+
+queue_len=$(echo "$out" | head -1)
+
+if [ $queue_len -lt $WARN ]; then
+	echo "OK: $queue_len submits in queue"
+	exit $STATE_OK
+elif [ $queue_len -lt $CRIT ]; then
+	echo "WARNING: $queue_len submits in queue"
+	exit $STATE_WARNING
+else
+	echo "CRITICAL: $queue_len sumbits in queue"
+	exit $STATE_CRITICAL
+fi
