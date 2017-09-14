@@ -1,0 +1,367 @@
+#!/bin/bash
+
+# This script was originally written in 2014 by Jakub Romanowski <kuba0007@staszic.waw.pl>
+# assistant of network administrator in XIV High School of Stanislaw Staszic in Warsaw.
+# Now (september 2017) I'm too lazy to translate the whole code to english.
+#
+# The main purpose of this script is to check wether currently running iptables rules
+# are (nearly*) identical with saved config. There are multiple reasons why this
+# two sets of rules may differ. One is that iptables rules wasn't loaded during
+# boot sequence. Second one is that somebody modified running config and didn't
+# save it - output of this script should be treated as reminder to save it.
+# * - Nearly, becouse you can exclude some chains from checking. In our use case
+# we excluded chain sshguard which was managed by software automatically.
+
+WERSJA=1.6-4
+
+# CHANGELOG:
+# 2014-01-17 kuba0007 powstanie / creation
+# 2014-01-24 mdyzio   małe zmiany / minor changes
+# 2014-08-11 mdyzio   małe zmiany / minor changes
+
+# wymaga sudo dla usera nagios do /sbin/iptables-save
+
+# Wstawianie po to, aby uzywac zmiennych z kodami wyjscia do nagiosa
+. /usr/lib/nagios/plugins/utils.sh
+
+###################
+ustawienia( ) {
+	# Sciezka pliku z ustawieniami regul iptables (domyslna)
+	FILE="iptables-rules"
+	
+	# Typ logow: "$LOG_LEVEL_XX"
+	# XX= { DEBUG, INFO, WARN, ERROR, NULL }
+	LOG_LEVEL="$LOG_LEVEL_NULL"
+	
+	# Tablica wyjatkow
+	#EXCLUDE=
+}
+
+inicjuj_zmienne( ) {
+	# Czy pokazac tekst pomocy; 1 -> tak, 0 -> nie
+	ustawienia[1]=0
+
+	# Kod wyjscia pod koniec skryptu (domyslne OK)
+	STATUS="$STATE_OK"
+	
+	# Te zmienne beda przechowywac zawartosc plikow z ustawieniami
+	# (bez uzywania plikow tymczasowych)
+	SETTINGS=""
+	SETTINGS_DUMP=""
+	
+	# Poziomy logowania
+	LOG_LEVEL_DEBUG=4 #wypisze wszystko
+	LOG_LEVEL_INFO=3 #wypisze wszystko co sensowne
+	LOG_LEVEL_WARN=2 #wypisze bledy i ostrzezenia
+	LOG_LEVEL_ERROR=1 #wypisze tylko bledy
+	LOG_LEVEL_NULL=0 #nic nie wypisze
+
+	WYJSCIE=""
+}
+
+pokaz_pomoc( ) {
+	echo 'Plugin do nagiosa (wersja '"$WERSJA"') porównujący zapisane we wskazanym pliku regułki iptables z tymi aktualnie działającymi.
+Parametry:
+ 
+   --help, -h               ten ekran pomocy
+   --config SCIEZKA         plik z zapisanymi regułkami iptables
+   -x TABLE.CHAIN           wyjątki przy porównywaniu regułek iptables
+
+Przykład:
+./check_iptables -x filter.sshguard --config /etc/iptables/rules.v4
+
+!!! Argumentow nie mozna laczyc: -abc
+!!! Trzeba pisac: -a -b -c'
+}
+
+czytaj_wejscie( ) {
+	
+	while (( "$#" )); do
+	        case "$1" in
+			
+			# wyjatki do regul
+			"-x")
+			shift
+			EXCLUDE+=( "$1" )
+			;;
+
+			# Sciezka do ustawien
+			"--config")
+			shift
+			FILE="$1"
+			;;
+			
+			# Wyświetlanie pomocy
+			"--help")
+			ustawienia[1]=1
+			;;
+
+			# Wyswietlanie pomocy
+			"-h")
+			ustawienia[1]=1
+			;;
+								                 
+			*)
+			loguj "ERROR" "Podano zly argument: '$1'"
+			exit $STATE_UNKNOWN
+		esac
+	shift
+	done
+}
+
+loguj_wypisz( ) {
+	
+	case "$1" in
+		"$LOG_LEVEL_DEBUG")
+			echo -e "[\033[0;35mDEBUG\033[0m] $2"
+			#echo -e "[DEBUG] $2"
+		;;
+		"$LOG_LEVEL_INFO")
+			echo -e "[\033[0;32mINFO\033[0m] $2"
+			#echo -e "[INFO] $2"
+		;;
+		"$LOG_LEVEL_WARN")
+			echo -e "[\033[1;33mWARN\033[0m] $2"
+			#echo -e "[WARN] $2"
+		;;
+		"$LOG_LEVEL_ERROR")
+			echo -e "[\033[0;31mERROR\033[0m] $2"
+			#echo -e "[ERROR] $2"
+		;;
+		*)
+			echo -e "[?] $2"
+	esac
+	
+}
+
+loguj( ) {
+	local LEVEL="$1"
+
+	# Zamian slow na liczby (jesli liczba to pomija sie ten krok)
+	if [ "$LEVEL" = "DEBUG" ]; then
+		LEVEL="$LOG_LEVEL_DEBUG"
+	fi
+	if [ "$LEVEL" = "INFO" ]; then
+		LEVEL="$LOG_LEVEL_INFO"
+	fi
+	if [ "$LEVEL" = "WARN" ]; then
+		LEVEL="$LOG_LEVEL_WARN"
+	fi
+	if [ "$LEVEL" = "ERROR" ]; then
+		LEVEL="$LOG_LEVEL_ERROR"
+	fi
+
+
+	if [ "$LEVEL" -le "$LOG_LEVEL" ]; then
+		loguj_wypisz "$LEVEL" "$2"
+	fi
+}
+
+zmien_status( ) {
+# Domyslne statusy nagiosa w chwili pisania skryptu (taka sciaga)
+#STATE_OK=0
+#STATE_WARNING=1
+#STATE_CRITICAL=2
+#STATE_UNKNOWN=3
+#STATE_DEPENDENT=4
+	
+	if [ "$1" -gt "$STATUS" ]; then
+		STATUS="$1"
+	fi
+
+}
+
+zrzuc_regulki( ) {
+	SETTINGS_DUMP=`sudo /sbin/iptables-save 2> /dev/null` || { loguj "ERROR" "Wystapil blad podczas zrzutu regul iptables. Przerwanie skryptu!"; echo 'UNKNOWN Cannot run /sbin/iptables-save'; exit $STATE_UNKNOWN; }
+	SETTINGS=`cat "$FILE"` || { loguj "ERROR" "Wystapil blad podczas odczytu regul iptables z ustawien. Przerwanie skryptu!"; exit $STATE_UNKNOWN; }
+	
+	# Debug
+	#SETTINGS_DUMP="$SETTINGS"
+}
+
+porownaj( ) {
+	local x=1
+	local cos_a=""
+	local cos_b=""
+	local tytul=""
+	
+	while [ "`echo "$SETTINGS" | awk  "/^\*[a-z]/,/COMMIT/{if(++m==1)n++;if(n==$x)print;if(/COMMIT/)m=0}"`" != "" ]
+	do
+		# Pojedynczy blok regul z ustawien zapisanych
+		cos_a=`echo "$SETTINGS" | awk  "/^\*[a-z]/,/COMMIT/{if(++m==1)n++;if(n==$x)print;if(/COMMIT/)m=0}"`
+		
+		# Nazwa regulki '*Blablabla' (gwiazdka na poczatku jest celowo)
+		tytul="`echo \"$cos_a\" | head -n 1 `"
+		
+		# Pojedynczy blok regul z ustawien zrzuconyvh
+		cos_b=`echo "$SETTINGS_DUMP" | awk  "/^$tytul/,/COMMIT/{if(++m==1)n++;if(n=="1")print;if(/COMMIT/)m=0}"`
+		
+		# Tu by sie jeszcz przydalo usunac te dzikie nawiasy
+		# np. [43453:534534]
+		# ...
+		#cat ../iptables-rules | sed 's/\[[0-9]\+:[0-9]\+\]//'
+
+		cos_a=`echo "$cos_a" | sed 's/\[[0-9]\+:[0-9]\+\] *//'`
+		cos_b=`echo "$cos_b" | sed 's/\[[0-9]\+:[0-9]\+\] *//'`
+
+		# osobna funkcja na wlasciwe porownanie regulek
+		loguj "DEBUG" "Porownuje regulki \"$tytul\""
+		rownaj "$tytul" "$cos_a" "$cos_b"
+		
+		#x++
+		let x=x+1;
+	done
+}
+
+rownaj( ) {
+	local tytul="$1"
+	local cos_a="$2"
+	local cos_b="$3"
+
+	##################################
+	# Usunięcie *table oraz posortowanie "deklaracji" chainów (przydatne, gdy plik iptables-rules był edytowany z palca)
+	##################################
+	if $(echo "$cos_a" | grep '^*' >/dev/null); then
+		cos_a="$(echo "$cos_a" | tail -n +2)"
+	fi
+	cos_a="$(echo "$cos_a" | grep '^:' | sort)"$'\n'"$(echo "$cos_a" | grep -v '^:')"
+
+	if $(echo "$cos_b" | grep '^*' >/dev/null); then
+		cos_b="$(echo "$cos_b" | tail -n +2)"
+	fi
+	cos_b="$(echo "$cos_b" | grep '^:' | sort)"$'\n'"$(echo "$cos_b" | grep -v '^:')"
+
+	##################################
+	# Usunięcie komentarzy
+	##################################
+	cos_a=$(echo "$cos_a" | grep -v '^#')
+	cos_b=$(echo "$cos_b" | grep -v '^#')
+
+	##################################
+	# Wyjątki
+	##################################
+	local tabelka=""
+	local chain=""
+	loguj "DEBUG" "Ogarniam wyjatki"
+
+	for i in "${EXCLUDE[@]}"; do
+		tabelka=$( echo "$i" | cut -d '.' -f 1 )
+		tabelka="*$tabelka"
+		chain=$( echo "$i" | cut -d '.' -f 2 )
+
+		if [ "$tabelka" = "$tytul" ]
+		then
+			loguj "DEBUG" "Kolejny wyjatek"
+			cos_a=$(echo "$cos_a" | grep -v -- "^-A $chain ")
+			cos_b=$(echo "$cos_b" | grep -v -- "^-A $chain ")
+		fi
+	done
+
+	##################################
+	# Zmiana nazw na adresy IP
+	##################################
+	nazwy=$(echo "$cos_a" | grep -o -- '-[sd] [a-z][a-z0-9.-]\+' | sed 's/^-[sd] //')
+	nazwy+=$(echo "$cos_b" | grep -o -- '-[sd] [a-z][a-z0-9.-]\+' | sed 's/^-[sd] //')
+	nazwy=$(echo $nazwy | sort | uniq)
+	for i in $nazwy; do
+		ip=$(host $i | sed 's/.*has address //') || { echo "WARNING Cannot resolve $i"; STATUS=$STATE_WARNING; }
+		cos_a=$(echo "$cos_a" | sed -e "s/\(-[sd]\) $i/\1 $ip/g")
+		cos_b=$(echo "$cos_b" | sed -e "s/\(-[sd]\) $i/\1 $ip/g")
+	done
+
+	##################################
+	# Dopisanie brakującej maski /32
+	##################################
+	NUMREGEXP='([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])' # regexp na liczby {0..255}
+	IPREGEXP="($NUMREGEXP\.){3}$NUMREGEXP"
+	cos_a=$(echo "$cos_a" | sed -Ee "s/(-[sd] $IPREGEXP) /\1\/32/g")
+	cos_b=$(echo "$cos_b" | sed -Ee "s/(-[sd] $IPREGEXP) /\1\/32/g")
+
+	##################################
+	# Dopisanie -m proto, gdy jest samo -p proto
+	##################################
+	cos_a=$(echo "$cos_a" | sed '/-p tcp -m/b; s/-p tcp/-p tcp -m tcp/')
+	cos_a=$(echo "$cos_a" | sed '/-p udp -m/b; s/-p udp/-p udp -m udp/')
+	cos_b=$(echo "$cos_b" | sed '/-p tcp -m/b; s/-p tcp/-p tcp -m tcp/')
+	cos_b=$(echo "$cos_b" | sed '/-p udp -m/b; s/-p udp/-p udp -m udp/')
+
+	##################################
+	# Sortowanie chainów z zachowaniem kolejności regułek
+	##################################
+	cos_a=$(echo "$cos_a" | awk '{ printf("%s|%.4d|%s\n", $2, NR, $0) }' | sort | cut -d '|' -f 3-)
+	cos_b=$(echo "$cos_b" | awk '{ printf("%s|%.4d|%s\n", $2, NR, $0) }' | sort | cut -d '|' -f 3-)
+
+# TODO
+# liberalizacja regułek wczytywanych z dysku
+# medium/hard | kolejność argumentów (-s 1.2.3.4 -i eth0 == -i eth0 -s 1.2.3.4) => hardcode'ować kolejność parametrów i ustawiać w niej -A -s -d -i -o (-p -m --sport --dport --other-long-options ?) -j (i pytanie, czy to nie powinno być przed dopisywaniem -m)
+#	-> print_rule4 @ iptables/iptables.c ma hardcore'owaną kolejność przełączników (ale tych do matchowania nie ma ;/)
+# TODO - bez parametrów powinien być sam help
+# TODO - --comment -> jednowyrazowe komentarze muszą mieć usuwane cudzysłowy (lub dokładane w iptables-save)
+
+	##################################
+	# Porównywanie
+	##################################
+	if  $( diff -Bwb <(echo "$cos_a") <(echo "$cos_b") >/dev/null )
+	then
+		loguj "INFO" "Reguly '$tytul' sa identyczne"
+	else
+		loguj "ERROR" "Reguly '$tytul' sie roznia!"
+		if [ -n "$WYJSCIE" ]; then
+			WYJSCIE+=$'\n'
+		fi
+		FILE_with_spaces=$FILE
+		COMMAND_with_spaces=iptables-save
+		while [ ${#FILE_with_spaces} -lt ${#COMMAND_with_spaces} ]; do
+			FILE_with_spaces="$FILE_with_spaces "
+		done
+		while [ ${#COMMAND_with_spaces} -lt ${#FILE_with_spaces} ]; do
+			COMMAND_with_spaces="$COMMAND_with_spaces "
+		done
+		WYJSCIE+="$(diff -uBwb <(echo "$cos_a") <(echo "$cos_b") | sed "s|^+++ [a-z0-9/]\+|+++ ${tytul:1} @ $COMMAND_with_spaces|" | sed "s|^--- [a-z0-9/]\+|--- ${tytul:1} @ $FILE_with_spaces|")"
+		zmien_status "$STATE_CRITICAL"
+	fi
+}
+
+
+
+
+
+### Wywolywanie skryptu
+########################
+
+inicjuj_zmienne || exit "$?"
+
+ustawienia || exit "$?"
+
+loguj "DEBUG" "Ogarniam wejscie i argumenty."
+czytaj_wejscie "$@" || exit "$?"
+
+if (( ${ustawienia[1]} == 1 ));
+then
+	pokaz_pomoc
+	exit $STATUS
+fi
+
+[ ! -r "$FILE" ] && { echo "UNKNOWN $FILE is not readable"; exit $STATE_UNKNOWN; }
+
+loguj "DEBUG" "Zrzucacam aktualne reguly iptables."
+zrzuc_regulki || exit "$?"
+
+loguj "DEBUG" "Zaczynam porownywac reguly."
+porownaj || exit "$?"
+
+loguj "DEBUG" "Zakonczono wykonywanie skryptu!" 
+
+if [ $STATUS -eq $STATE_OK ]; then
+	echo 'OK loaded iptables rules match saved ones'
+	exit $STATUS
+fi
+
+if [ $STATUS -eq $STATE_CRITICAL ]; then
+	echo "CRITICAL loaded iptables rules don't match saved ones"
+	echo "$WYJSCIE"
+	exit $STATUS
+fi
+
+echo 'UNKNOWN exit code'
+exit $STATUS
