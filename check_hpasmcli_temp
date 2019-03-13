@@ -3,6 +3,13 @@
 
 # 2019-03-10 michel creation
 
+# HINTS:
+# plugin tested with Python 3.4 at Debian 8
+# requires permission to run ``hpasmcli -s 'show temp'``
+# suggested solution:
+# 1. add 'sudo' into line with check_output(...)
+# 2. append `nagios HOST=(root) NOPASSWD:/sbin/hpasmcli -s show temp` to your sudoers file
+
 from subprocess import check_output
 
 STATE_OK = 0
