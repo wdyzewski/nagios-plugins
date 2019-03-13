@@ -27,15 +27,19 @@ for sensor in hpasmcli_temp[2:]:
 
 temperatures.sort(key=lambda sensor: sensor[1] / sensor[2], reverse=True)
 
-print(', '.join([('%s: %iC/%iC' % (i[0].decode(), i[1], i[2])) for i in temperatures]))
+temps_info = ', '.join([('%s: %iC/%iC' % (i[0].decode(), i[1], i[2])) for i in temperatures])
 
 highest_temperature_ratio = temperatures[0][1] / temperatures[0][2]
 
 if highest_temperature_ratio < 0.9:
+    print('OK: ' + temps_info)
     exit(STATE_OK)
 elif highest_temperature_ratio < 1:
+    print('WARN: ' + temps_info)
     exit(STATE_WARNING)
 elif highest_temperature_ratio >= 1:
+    print('CRIT: ' + temps_info)
     exit(STATE_CRITICAL)
 else:
+    print('UNKNOWN: ' + temps_info)
     exit(STATE_UNKNOWN)
