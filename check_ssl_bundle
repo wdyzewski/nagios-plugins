@@ -8,8 +8,13 @@
 WARN_DAYS = 14
 CRIT_DAYS = 7
 
-CERT_FILE = 'klienci.pem'
+BUNDLE_FILE = 'bundle.pem'
+
 SPLIT_STRING = '-----BEGIN CERTIFICATE-----'
+STATE_OK = 0
+STATE_WARNING = 1
+STATE_CRITICAL = 2
+STATE_UNKNOWN = 3
 
 import datetime
 from OpenSSL import crypto
@@ -20,7 +25,10 @@ crit_timestamp = (datetime.datetime.now() + datetime.timedelta(days=CRIT_DAYS)).
 print(warn_timestamp)
 print(crit_timestamp)
 
-for cert_text in open(CERT_FILE).read().split(SPLIT_STRING)[1:]:
+if CRIT_DAYS > WARN_DAYS:
+    print("CRIT_DAYS > WARN_DAYS doesn't make any sense")
+
+for cert_text in open(BUNDLE_FILE).read().split(SPLIT_STRING)[1:]:
     try:
         cert = crypto.load_certificate(crypto.FILETYPE_PEM, SPLIT_STRING + cert_text)
     except:
