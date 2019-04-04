@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 
 # Author: Wojciech Dyżewski <mdyzio@icm.edu.pl>
-# PoC created: 28.03.2019
+# created: 03/04.2019
+
+# TODO:
+# 1. WARN_DAYS, CRIT_DAYS, BUNDLE_FILE passed from command line
+# 2. excluding certificates from check? certs specified by index or common name
 
 # requires python3-openssl
 
 WARN_DAYS = 14
 CRIT_DAYS = 7
-
 BUNDLE_FILE = 'bundle.pem'
 
 SPLIT_STRING = '-----BEGIN CERTIFICATE-----'
@@ -18,31 +21,48 @@ STATE_UNKNOWN = 3
 
 import datetime
 from OpenSSL import crypto
+from sys import exit
+
+def cert2status(idx, cert):
+    return "CN=" + cert.get_subject().commonName + " (cert #" + str(idx) + ")"
+
+current_state = STATE_OK
+problems = []
 
 warn_timestamp = (datetime.datetime.now() + datetime.timedelta(days=WARN_DAYS)).strftime('%Y%m%d%H%M%SZ')
 crit_timestamp = (datetime.datetime.now() + datetime.timedelta(days=CRIT_DAYS)).strftime('%Y%m%d%H%M%SZ')
 
-print(warn_timestamp)
-print(crit_timestamp)
-
 if CRIT_DAYS > WARN_DAYS:
     print("CRIT_DAYS > WARN_DAYS doesn't make any sense")
 
+cert_index = 0
 for cert_text in open(BUNDLE_FILE).read().split(SPLIT_STRING)[1:]:
+    cert_index += 1
     try:
         cert = crypto.load_certificate(crypto.FILETYPE_PEM, SPLIT_STRING + cert_text)
     except:
-        print("Unable to load certificate!")
+        if current_state < STATE_UNKNOWN:
+            current_state = STATE_UNKNOWN
+            problems = ["unable to load cert #" + str(cert_index)]
+        else:
+            problems.append("unable to load cert #" + str(cert_index))
         continue
 
     not_after = cert.get_notAfter().decode("utf-8")
 
-    print("Issuer: " + str(cert.get_issuer()))
-    print("Not after: " + not_after)
+    if warn_timestamp >= not_after:
+        if crit_timestamp < not_after:
+            if current_state < STATE_WARNING:
+                current_state = STATE_WARNING
+                problems = [cert2status(cert_index, cert)]
+            elif current_state == STATE_WARNING:
+                problems.append(cert2status(cert_index, cert))
+        else:
+            if current_state < STATE_CRITICAL:
+                current_state = STATE_CRITICAL
+                problems = [cert2status(cert_index, cert)]
+            elif current_state == STATE_CRITICAL:
+                problems.append(cert2status(cert_index, cert))
 
-    if warn_timestamp < not_after:
-        print("OK")
-    elif crit_timestamp < not_after:
-        print("WARNING")
-    else:
-        print("CRITICAL")
+print(["OK", "WARN:", "CRIT:", "UNKNOWN:"][current_state], ", ".join(problems))
+exit(current_state)
