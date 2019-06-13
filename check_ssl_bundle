@@ -21,10 +21,21 @@ STATE_UNKNOWN = 3
 
 import datetime
 from OpenSSL import crypto
-from sys import exit
+from sys import exit, stderr
+import argparse
+
+def debug(message):
+    if (args.verbose):
+        print(message, file=stderr)
+
+def getCN(cert):
+    return cert.get_subject().commonName
 
 def cert2status(idx, cert):
-    return "CN=" + cert.get_subject().commonName + " (cert #" + str(idx) + ")"
+    def cert_date2text(cert_date):
+        date = datetime.datetime.strptime(cert_date.decode('ascii'), '%Y%m%d%H%M%SZ')
+        return date.strftime('%Y-%m-%d %H:%M:%S')
+    return "CN=" + getCN(cert) + " (cert #" + str(idx) + ") valid to " + cert_date2text(cert.get_notAfter())
 
 current_state = STATE_OK
 problems = []
@@ -32,10 +43,23 @@ problems = []
 warn_timestamp = (datetime.datetime.now() + datetime.timedelta(days=WARN_DAYS)).strftime('%Y%m%d%H%M%SZ')
 crit_timestamp = (datetime.datetime.now() + datetime.timedelta(days=CRIT_DAYS)).strftime('%Y%m%d%H%M%SZ')
 
+parser = argparse.ArgumentParser(description='Check if bundle has valid certificates.')
+parser.add_argument('--exclude',
+                    action='append',
+                    help='CNs to exclude from checking')
+parser.add_argument('--only',
+                    action='append',
+                    help='check only listed CNs')
+parser.add_argument('--verbose',
+                    action='store_true',
+                    help='be more verbose (AKA debug)')
+args = parser.parse_args()
+
 if CRIT_DAYS > WARN_DAYS:
     print("CRIT_DAYS > WARN_DAYS doesn't make any sense")
 
 cert_index = 0
+certs_checked = 0
 for cert_text in open(BUNDLE_FILE).read().split(SPLIT_STRING)[1:]:
     cert_index += 1
     try:
@@ -47,6 +71,13 @@ for cert_text in open(BUNDLE_FILE).read().split(SPLIT_STRING)[1:]:
         else:
             problems.append("unable to load cert #" + str(cert_index))
         continue
+
+    if args.only and not getCN(cert) in args.only:
+        continue
+    if args.exclude and getCN(cert) in args.exclude:
+        continue
+
+    debug("Checking cert CN=" + getCN(cert))
 
     not_after = cert.get_notAfter().decode("utf-8")
 
@@ -64,5 +95,7 @@ for cert_text in open(BUNDLE_FILE).read().split(SPLIT_STRING)[1:]:
             elif current_state == STATE_CRITICAL:
                 problems.append(cert2status(cert_index, cert))
 
-print(["OK", "WARN:", "CRIT:", "UNKNOWN:"][current_state], ", ".join(problems))
+    certs_checked += 1
+
+print(["OK", "WARN:", "CRIT:", "UNKNOWN:"][current_state], "; ".join(problems), "|certs_checked=" + str(certs_checked))
 exit(current_state)
