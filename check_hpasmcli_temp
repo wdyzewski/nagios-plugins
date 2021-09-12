@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+# -*- coding: utf8 -*-
+
+# 2019-03-10 michel creation
+
+# HINTS:
+# plugin tested with Python 3.4 at Debian 8
+# requires permission to run ``hpasmcli -s 'show temp'``
+# suggested solution:
+# 1. add 'sudo' into line with check_output(...)
+# 2. append `nagios HOST=(root) NOPASSWD:/sbin/hpasmcli -s show temp` to your sudoers file
+
+from subprocess import check_output
+
+STATE_OK = 0
+STATE_WARNING = 1
+STATE_CRITICAL = 2
+STATE_UNKNOWN = 3
+
+hpasmcli_out = check_output(['hpasmcli', '-s', 'show temp'])
+
+hpasmcli_temp = [i for i in hpasmcli_out.split(b'\n') if i != b'']
+
+temperatures = []
+
+for sensor in hpasmcli_temp[2:]:
+    [sensor_id, sensor_location, sensor_value, sensor_max] = sensor.split()
+
+    if sensor_value != b'-':
+        sensor_value = int(sensor_value.split(b'/')[0][:-1])
+        sensor_max = int(sensor_max.split(b'/')[0][:-1])
+
+        temperatures.append([sensor_id + b'_' + sensor_location, sensor_value, sensor_max])
+
+temperatures.sort(key=lambda sensor: sensor[1] / sensor[2], reverse=True)
+
+temps_info = ', '.join([('%s: %iC/%iC' % (i[0].decode(), i[1], i[2])) for i in temperatures])
+
+highest_temperature_ratio = temperatures[0][1] / temperatures[0][2]
+
+if highest_temperature_ratio < 0.9:
+    print('OK: ' + temps_info)
+    exit(STATE_OK)
+elif highest_temperature_ratio < 1:
+    print('WARN: ' + temps_info)
+    exit(STATE_WARNING)
+elif highest_temperature_ratio >= 1:
+    print('CRIT: ' + temps_info)
+    exit(STATE_CRITICAL)
+else:
+    print('UNKNOWN: ' + temps_info)
+    exit(STATE_UNKNOWN)
