@@ -1,0 +1,30 @@
+#!/bin/sh
+
+STATE_OK=0
+STATE_WARNING=1
+STATE_CRITICAL=2
+STATE_UNKNOWN=3
+
+if [ ! -e /sys/class/net/$1 ]; then
+  echo CRIT: $1 interface does not exist
+  exit $STATE_CRITICAL
+fi
+
+if grep -q -x down /sys/class/net/$1/operstate; then
+  echo CRIT: $1: Link: down
+  exit $STATE_CRITICAL
+fi
+
+if grep -q -x up /sys/class/net/$1/operstate; then
+  EXPECTED_SPEED=$(numfmt --from=si --to-unit=1000000 $2)
+  if grep -q -x $EXPECTED_SPEED /sys/class/net/$1/speed; then
+    echo OK: $1: Link: up, Speed: $2
+    exit $STATE_OK
+  else
+    REAL_SPEED=$(cat /sys/class/net/$1/speed | numfmt --from-unit=1000000 --to=si --format="%.0f" )
+    echo WARN: $1: Link: up, Speed: $REAL_SPEED, Expected speed: $2
+    exit $STATE_WARNING
+  fi
+fi
+
+exit $STATE_UNKNOWN
